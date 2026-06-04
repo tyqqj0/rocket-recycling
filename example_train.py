@@ -9,6 +9,7 @@ import glob
 
 # Decide which device we want to run on
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print('device: ', device)
 
 if __name__ == '__main__':
 
@@ -66,7 +67,7 @@ if __name__ == '__main__':
             plt.savefig(os.path.join(ckpt_folder, 'rewards_' + str(episode_id).zfill(8) + '.jpg'))
             plt.close()
 
-            torch.save({'episode_id': episode_id,
+            torch.save({'episode_id': episode_id, 
                         'REWARDS': REWARDS,
                         'model_G_state_dict': net.state_dict()},
                        os.path.join(ckpt_folder, 'ckpt_' + str(episode_id).zfill(8) + '.pt'))
