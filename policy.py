@@ -69,8 +69,7 @@ class MLP(nn.Module):
         self.relu = nn.LeakyReLU(0.2)
 
     def forward(self, x):
-        # shape x: 1 x m_token x m_state
-        x = x.view([1, -1])
+        x = x.flatten(start_dim=1)
         x = self.mapping(x)
         x = self.relu(self.linear1(x))
         x = self.relu(self.linear2(x))
@@ -92,7 +91,7 @@ class ActorCritic(nn.Module):
         self.critic = MLP(input_dim=input_dim, output_dim=1)
         self.softmax = nn.Softmax(dim=-1)
 
-        self.optimizer = optim.RMSprop(self.parameters(), lr=5e-5)
+        self.optimizer = optim.Adam(self.parameters(), lr=3e-4)
 
     def forward(self, x):
         # shape x: batch_size x m_token x m_state
@@ -120,6 +119,107 @@ class ActorCritic(nn.Module):
         log_prob = torch.log(probs[action_id] + 1e-9)
 
         return action_id, log_prob, value
+
+    def get_actions_batch(self, states, deterministic=False, exploration=0.01):
+        dev = next(self.parameters()).device
+        states_t = torch.tensor(states, dtype=torch.float32).to(dev)
+        probs, values = self.forward(states_t)
+        values = values.squeeze(-1)
+
+        probs_np = probs.detach().cpu().numpy()
+        N = len(states)
+        actions = np.zeros(N, dtype=np.int64)
+
+        for i in range(N):
+            if deterministic:
+                actions[i] = np.argmax(probs_np[i])
+            elif random.random() < exploration:
+                actions[i] = random.randint(0, self.output_dim - 1)
+            else:
+                actions[i] = np.random.choice(self.output_dim, p=probs_np[i])
+
+        actions_t = torch.tensor(actions, dtype=torch.int64).to(dev)
+        log_probs = torch.log(probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-9)
+
+        return actions, log_probs, values
+
+    @staticmethod
+    def compute_gae(rewards, values, masks, bootstrap_value, gamma=0.999, lam=0.95):
+        T, N = rewards.shape
+        advantages = torch.zeros(T, N, device=rewards.device)
+        gae = torch.zeros(N, device=rewards.device)
+
+        next_value = bootstrap_value
+        for t in reversed(range(T)):
+            delta = rewards[t] + gamma * next_value * masks[t] - values[t]
+            gae = delta + gamma * lam * masks[t] * gae
+            advantages[t] = gae
+            next_value = values[t]
+
+        returns = advantages + values
+        return advantages, returns
+
+    @staticmethod
+    def update_ppo(network, states, actions, old_log_probs, returns, advantages,
+                   ppo_epochs=4, mini_batch_size=512, clip_eps=0.2,
+                   vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5):
+        T_N = states.shape[0]
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        for epoch in range(ppo_epochs):
+            indices = np.random.permutation(T_N)
+            for start in range(0, T_N, mini_batch_size):
+                batch_idx = indices[start:start + mini_batch_size]
+
+                mb_states = states[batch_idx]
+                mb_actions = actions[batch_idx]
+                mb_old_log_probs = old_log_probs[batch_idx]
+                mb_returns = returns[batch_idx]
+                mb_advantages = advantages[batch_idx]
+
+                probs, values = network.forward(mb_states)
+                values = values.squeeze(-1)
+                dist = torch.distributions.Categorical(probs)
+                new_log_probs = dist.log_prob(mb_actions)
+                entropy = dist.entropy()
+
+                ratio = torch.exp(new_log_probs - mb_old_log_probs)
+                surr1 = ratio * mb_advantages
+                surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * mb_advantages
+                actor_loss = -torch.min(surr1, surr2).mean()
+
+                critic_loss = vf_coef * (mb_returns - values).pow(2).mean()
+                entropy_loss = -ent_coef * entropy.mean()
+
+                loss = actor_loss + critic_loss + entropy_loss
+
+                network.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(network.parameters(), max_grad_norm)
+                network.optimizer.step()
+
+    @staticmethod
+    def update_ac_parallel(network, rewards, log_probs, values, masks, bootstrap_values, gamma=0.99):
+        T, N = rewards.shape
+
+        returns = torch.zeros(T, N, device=rewards.device)
+        R = bootstrap_values.detach()
+        for t in reversed(range(T)):
+            R = rewards[t] + gamma * R * masks[t]
+            returns[t] = R
+
+        returns_flat = returns.view(-1).detach()
+        log_probs_flat = log_probs.view(-1)
+        values_flat = values.view(-1)
+
+        advantage = returns_flat - values_flat
+        actor_loss = (-log_probs_flat * advantage.detach()).mean()
+        critic_loss = 0.5 * advantage.pow(2).mean()
+        ac_loss = actor_loss + critic_loss
+
+        network.optimizer.zero_grad()
+        ac_loss.backward()
+        network.optimizer.step()
 
     @staticmethod
     def update_ac(network, rewards, log_probs, values, masks, Qval, gamma=0.99):

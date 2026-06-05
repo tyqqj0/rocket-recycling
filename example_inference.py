@@ -10,14 +10,19 @@ print('device: ', device)
 
 if __name__ == '__main__':
 
-    task = 'hover'  # 'hover' or 'landing'
+    task = 'landing'  # 'hover' or 'landing'
     max_steps = 800
-    ckpt_dir = glob.glob(os.path.join(task+'_ckpt', '*.pt'))[-1]  # last ckpt
+    ckpt_files = sorted(glob.glob(os.path.join(task+'_ckpt', '*.pt')))
+    if not ckpt_files:
+        print(f'No checkpoint found in {task}_ckpt/. Train first with train_parallel.py')
+        exit(1)
+    ckpt_dir = ckpt_files[-1]
+    print(f'Loading checkpoint: {ckpt_dir}')
 
     env = Rocket(task=task, max_steps=max_steps)
     net = ActorCritic(input_dim=env.state_dims, output_dim=env.action_dims).to(device)
     if os.path.exists(ckpt_dir):
-        checkpoint = torch.load(ckpt_dir)
+        checkpoint = torch.load(ckpt_dir, weights_only=False)
         net.load_state_dict(checkpoint['model_G_state_dict'])
 
     state = env.reset()

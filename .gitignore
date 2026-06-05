@@ -122,3 +122,5 @@ TTT*
 rewards.jpg
 hover_ckpt
 landing_ckpt
+wandb/
+.gitignore
