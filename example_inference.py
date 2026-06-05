@@ -12,11 +12,15 @@ if __name__ == '__main__':
 
     task = 'landing'  # 'hover' or 'landing'
     max_steps = 800
-    ckpt_files = sorted(glob.glob(os.path.join(task+'_ckpt', '*.pt')))
-    if not ckpt_files:
-        print(f'No checkpoint found in {task}_ckpt/. Train first with train_parallel.py')
-        exit(1)
-    ckpt_dir = ckpt_files[-1]
+    best_ckpt = os.path.join(task + '_ckpt', 'best.pt')
+    if os.path.exists(best_ckpt):
+        ckpt_dir = best_ckpt
+    else:
+        ckpt_files = sorted(glob.glob(os.path.join(task+'_ckpt', '*.pt')))
+        if not ckpt_files:
+            print(f'No checkpoint found in {task}_ckpt/. Train first with train_parallel.py')
+            exit(1)
+        ckpt_dir = ckpt_files[-1]
     print(f'Loading checkpoint: {ckpt_dir}')
 
     env = Rocket(task=task, max_steps=max_steps)

@@ -54,6 +54,7 @@ if __name__ == '__main__':
 
     last_update_id = 0
     REWARDS = []
+    best_mean_reward = -float('inf')
     episode_rewards = np.zeros(num_envs)
 
     ckpt_files = sorted(glob.glob(os.path.join(ckpt_folder, '*.pt')))
@@ -62,6 +63,7 @@ if __name__ == '__main__':
         net.load_state_dict(checkpoint['model_G_state_dict'])
         last_update_id = checkpoint.get('update_id', 0)
         REWARDS = checkpoint.get('REWARDS', [])
+        best_mean_reward = checkpoint.get('best_mean_reward', -float('inf'))
 
     states = vec_env.reset()
 
@@ -136,17 +138,19 @@ if __name__ == '__main__':
         )
 
         # Logging
+        rollout_mean_reward = mb_rewards.sum(axis=0).mean()
+        wandb.log({
+            "rollout/mean_reward": rollout_mean_reward,
+            "rollout/mean_value": mb_values.mean(),
+            "rollout/mean_advantage": flat_advantages.mean().item(),
+            "update": update_id,
+        })
+
         if len(REWARDS) > 0 and update_id % 10 == 0:
             recent = REWARDS[-num_envs * 10:] if len(REWARDS) > num_envs * 10 else REWARDS
             mean_reward = np.mean(recent)
             print(f'update {update_id}, episodes: {len(REWARDS)}, '
                   f'mean reward (recent): {mean_reward:.3f}')
-            wandb.log({
-                "reward/mean": mean_reward,
-                "reward/max": np.max(recent),
-                "reward/min": np.min(recent),
-                "episodes": len(REWARDS),
-            }, step=update_id)
 
         # Save checkpoint
         if update_id % save_interval == 0 and update_id > 0:
@@ -154,7 +158,22 @@ if __name__ == '__main__':
                 'update_id': update_id,
                 'episode_id': len(REWARDS),
                 'REWARDS': REWARDS,
+                'best_mean_reward': best_mean_reward,
                 'model_G_state_dict': net.state_dict()
             }, os.path.join(ckpt_folder, f'ckpt_{update_id:08d}.pt'))
+
+        # Save best checkpoint
+        if len(REWARDS) >= 50:
+            recent_mean = np.mean(REWARDS[-50:])
+            if recent_mean > best_mean_reward:
+                best_mean_reward = recent_mean
+                torch.save({
+                    'update_id': update_id,
+                    'episode_id': len(REWARDS),
+                    'REWARDS': REWARDS,
+                    'best_mean_reward': best_mean_reward,
+                    'model_G_state_dict': net.state_dict()
+                }, os.path.join(ckpt_folder, 'best.pt'))
+                print(f'  -> new best model saved (mean reward: {best_mean_reward:.3f})')
 
     wandb.finish()
